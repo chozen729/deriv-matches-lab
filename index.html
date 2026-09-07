@@ -1,0 +1,713 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Deriv Matches Predictor</title>
+
+<style>
+body{
+  margin:0;
+  background:#0b1020;
+  color:#fff;
+  font-family:Arial,sans-serif;
+}
+.container{
+  max-width:900px;
+  margin:auto;
+  padding:20px;
+}
+.card{
+  background:#151d32;
+  border:1px solid #293654;
+  border-radius:15px;
+  padding:18px;
+  margin-bottom:15px;
+}
+h1{
+  margin-top:0;
+}
+label{
+  display:block;
+  color:#9ca9c5;
+  margin-bottom:6px;
+}
+select,input,button{
+  width:100%;
+  padding:12px;
+  margin-bottom:12px;
+  border-radius:9px;
+  border:1px solid #344466;
+  background:#0d1427;
+  color:white;
+  box-sizing:border-box;
+}
+button{
+  background:#2456a6;
+  font-weight:bold;
+  cursor:pointer;
+}
+.result{
+  text-align:center;
+}
+.prediction{
+  font-size:55px;
+  font-weight:bold;
+}
+.green{
+  color:#4ade80;
+}
+.yellow{
+  color:#facc15;
+}
+.red{
+  color:#f87171;
+}
+.digits{
+  display:grid;
+  grid-template-columns:repeat(5,1fr);
+  gap:8px;
+}
+.digit{
+  background:#0d1427;
+  padding:10px;
+  text-align:center;
+  border-radius:8px;
+}
+.best{
+  border:2px solid #4ade80;
+}
+.bar{
+  height:6px;
+  background:#293654;
+  margin-top:6px;
+  border-radius:5px;
+}
+.fill{
+  height:100%;
+  background:#4ade80;
+  border-radius:5px;
+}
+.small{
+  color:#9ca9c5;
+  font-size:13px;
+}
+.status{
+  padding:10px;
+  background:#0d1427;
+  border-radius:8px;
+  margin-top:10px;
+}
+</style>
+</head>
+
+<body>
+
+<div class="container">
+
+<h1>🎯 deriv matches predictor</h1>
+
+<div class="card">
+
+<label>market</label>
+
+<select id="market">
+<option value="1HZ100V">volatility 100 (1s)</option>
+<option value="R_10">volatility 10</option>
+<option value="R_25">volatility 25</option>
+<option value="R_50">volatility 50</option>
+<option value="R_75">volatility 75</option>
+<option value="R_100">volatility 100</option>
+<option value="R_150">volatility 150</option>
+<option value="R_250">volatility 250</option>
+</select>
+
+<label>ticks to analyse</label>
+<input id="count" type="number" value="1000" min="100" max="5000">
+
+<label>analysis window</label>
+<input id="window" type="number" value="200" min="20" max="1000">
+
+<button onclick="loadData()">load market data</button>
+
+<button onclick="startLive()">start live prediction</button>
+
+<div id="status" class="status">
+waiting for data...
+</div>
+
+</div>
+
+
+<div class="card result">
+
+<div class="small">
+best matches candidate
+</div>
+
+<div id="prediction" class="prediction">
+-
+</div>
+
+<div id="confidence">
+waiting...
+</div>
+
+</div>
+
+
+<div class="card">
+
+<h3>digit probability ranking</h3>
+
+<div id="digits" class="digits">
+</div>
+
+</div>
+
+
+<div class="card">
+
+<h3>backtest</h3>
+
+<div id="backtest">
+no backtest yet
+</div>
+
+</div>
+
+
+<div class="card">
+
+<h3>recent digits</h3>
+
+<div id="recent" class="digits">
+</div>
+
+</div>
+
+
+<div class="card small">
+
+<b>important</b>
+
+<p>
+this tool is for statistical analysis and backtesting.
+it does not guarantee the next digit and does not place trades automatically.
+</p>
+
+<p>
+the theoretical baseline for ten equally likely digits is approximately 10%.
+the backtest is therefore important before considering real-money use.
+</p>
+
+</div>
+
+</div>
+
+
+<script>
+
+const WS_URL =
+"wss://api.derivws.com/trading/v1/options/ws/public";
+
+let digits=[];
+let socket=null;
+let pipSize=null;
+
+
+function digitFromQuote(quote){
+
+    let number=Number(quote);
+
+    if(!Number.isFinite(number)){
+        return null;
+    }
+
+    let decimals =
+        pipSize === null ? 2 : Number(pipSize);
+
+    let value =
+        number.toFixed(decimals);
+
+    let clean =
+        value.replace(/[^0-9]/g,'');
+
+    if(clean.length===0){
+        return null;
+    }
+
+    return Number(
+        clean.charAt(clean.length-1)
+    );
+}
+
+
+function getModel(data){
+
+    let windowSize =
+        Number(
+            document.getElementById("window").value
+        );
+
+    windowSize =
+        Math.min(windowSize,data.length);
+
+    let sample =
+        data.slice(-windowSize);
+
+    let scores =
+        new Array(10).fill(0);
+
+    let frequency =
+        new Array(10).fill(0);
+
+    for(let i=0;i<sample.length;i++){
+
+        let d=sample[i];
+
+        frequency[d]++;
+
+        let age =
+            sample.length-1-i;
+
+        let recency =
+            Math.exp(
+                -age/(windowSize*0.25)
+            );
+
+        scores[d] +=
+            0.7*recency +
+            0.3/windowSize;
+    }
+
+
+    for(let d=0;d<10;d++){
+
+        scores[d] +=
+            0.3 *
+            (frequency[d]/windowSize);
+
+    }
+
+
+    let total =
+        scores.reduce(
+            (a,b)=>a+b,0
+        );
+
+    let probabilities =
+        scores.map(
+            x=>x/total
+        );
+
+
+    let ranking =
+        [...Array(10).keys()]
+        .sort(
+            (a,b)=>
+            probabilities[b]-
+            probabilities[a]
+        );
+
+
+    return {
+        probabilities,
+        ranking,
+        windowSize
+    };
+}
+
+
+function displayPrediction(){
+
+    if(digits.length<20){
+        return;
+    }
+
+    let model =
+        getModel(digits);
+
+    let best =
+        model.ranking[0];
+
+    let probability =
+        model.probabilities[best]*100;
+
+
+    document.getElementById(
+        "prediction"
+    ).innerText=best;
+
+
+    let confidence =
+        document.getElementById(
+            "confidence"
+        );
+
+    confidence.innerHTML =
+        "model score: <b>"+
+        probability.toFixed(2)+
+        "%</b>";
+
+
+    let html="";
+
+    model.ranking.forEach(
+        d=>{
+
+            let p =
+                model.probabilities[d]*100;
+
+            html+=
+            '<div class="digit '+
+            (d===best?'best':'')+
+            '">'+
+
+            '<b>'+d+'</b><br>'+
+
+            p.toFixed(1)+"%"+
+
+            '<div class="bar">'+
+            '<div class="fill" style="width:'+
+            Math.min(p,100)+
+            '%"></div>'+
+            '</div>'+
+
+            '</div>';
+
+        }
+    );
+
+
+    document.getElementById(
+        "digits"
+    ).innerHTML=html;
+
+
+    let recent =
+        digits.slice(-30);
+
+    document.getElementById(
+        "recent"
+    ).innerHTML =
+        recent.map(
+            d=>
+            '<div class="digit"><b>'+
+            d+
+            '</b></div>'
+        ).join('');
+}
+
+
+function backtest(){
+
+    let windowSize =
+        Number(
+            document.getElementById("window").value
+        );
+
+    if(digits.length<=windowSize+10){
+        return;
+    }
+
+    let hits=0;
+    let total=0;
+
+    for(
+        let i=windowSize;
+        i<digits.length;
+        i++
+    ){
+
+        let history =
+            digits.slice(
+                i-windowSize,
+                i
+            );
+
+        let model =
+            getModel(history);
+
+        let prediction =
+            model.ranking[0];
+
+        let actual =
+            digits[i];
+
+        if(prediction===actual){
+            hits++;
+        }
+
+        total++;
+    }
+
+
+    let rate =
+        (hits/total)*100;
+
+
+    let cls =
+        rate>10
+        ? "green"
+        : rate<10
+        ? "red"
+        : "yellow";
+
+
+    document.getElementById(
+        "backtest"
+    ).innerHTML=
+
+    "<b class='"+cls+"'>"+
+    rate.toFixed(2)+
+    "% hit rate</b><br><br>"+
+
+    "hits: "+hits+
+    "<br>"+
+
+    "predictions tested: "+total+
+    "<br>"+
+
+    "baseline: 10%"+
+    "<br>"+
+
+    "difference from baseline: "+
+    (rate-10).toFixed(2)+
+    " percentage points";
+}
+
+
+function loadData(){
+
+    let market =
+        document.getElementById(
+            "market"
+        ).value;
+
+    let count =
+        Number(
+            document.getElementById(
+                "count"
+            ).value
+        );
+
+
+    document.getElementById(
+        "status"
+    ).innerText=
+    "loading historical ticks...";
+
+
+    let ws =
+        new WebSocket(WS_URL);
+
+
+    ws.onopen=()=>{
+
+        ws.send(
+            JSON.stringify({
+
+                ticks_history:market,
+
+                count:count,
+
+                end:"latest",
+
+                style:"ticks"
+
+            })
+        );
+
+    };
+
+
+    ws.onmessage=(event)=>{
+
+        let data =
+            JSON.parse(event.data);
+
+
+        if(data.error){
+
+            document.getElementById(
+                "status"
+            ).innerText=
+            data.error.message;
+
+            ws.close();
+
+            return;
+        }
+
+
+        if(data.msg_type==="history"){
+
+            pipSize =
+                data.history.pip_size ||
+                data.pip_size ||
+                null;
+
+
+            digits =
+                data.history.prices
+                .map(
+                    digitFromQuote
+                )
+                .filter(
+                    x=>x!==null
+                );
+
+
+            document.getElementById(
+                "status"
+            ).innerText=
+            "loaded "+
+            digits.length+
+            " ticks";
+
+
+            displayPrediction();
+
+            backtest();
+
+            ws.close();
+
+        }
+
+    };
+
+
+    ws.onerror=()=>{
+
+        document.getElementById(
+            "status"
+        ).innerText=
+        "connection error";
+
+    };
+
+}
+
+
+function startLive(){
+
+    if(socket){
+
+        socket.close();
+
+    }
+
+
+    let market =
+        document.getElementById(
+            "market"
+        ).value;
+
+
+    document.getElementById(
+        "status"
+    ).innerText=
+    "connecting to live market...";
+
+
+    socket =
+        new WebSocket(WS_URL);
+
+
+    socket.onopen=()=>{
+
+        socket.send(
+            JSON.stringify({
+
+                ticks:market,
+
+                subscribe:1
+
+            })
+        );
+
+
+        document.getElementById(
+            "status"
+        ).innerText=
+        "live prediction running";
+
+    };
+
+
+    socket.onmessage=(event)=>{
+
+        let data =
+            JSON.parse(event.data);
+
+
+        if(data.error){
+
+            document.getElementById(
+                "status"
+            ).innerText=
+            data.error.message;
+
+            return;
+        }
+
+
+        if(
+            data.msg_type==="tick"
+        ){
+
+            if(
+                data.tick.pip_size
+            ){
+
+                pipSize =
+                    data.tick.pip_size;
+
+            }
+
+
+            let d =
+                digitFromQuote(
+                    data.tick.quote
+                );
+
+
+            if(d!==null){
+
+                digits.push(d);
+
+
+                if(
+                    digits.length>5000
+                ){
+
+                    digits.shift();
+
+                }
+
+
+                displayPrediction();
+
+            }
+
+        }
+
+    };
+
+
+    socket.onerror=()=>{
+
+        document.getElementById(
+            "status"
+        ).innerText=
+        "live connection error";
+
+    };
+
+}
+
+</script>
+
+</body>
+</html>
